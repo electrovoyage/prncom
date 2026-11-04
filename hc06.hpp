@@ -210,4 +210,5 @@ namespace HC06 {
     __always_inline void sendStep(const char* message, size_t length);
 
     __always_inline void loop() {};
+    __always_inline void loop2() {};
 }

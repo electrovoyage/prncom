@@ -16,6 +16,19 @@ extern RingbufHandle_t toUSB;
 
 namespace WS_COM {
     websockets::WebsocketsClient client;
+    volatile bool needReconnect = false;
+
+    void reconnect() {
+        PRNCOM_LOG("connecting to " PRNCOM_SERVER);
+        bool result = client.connect(PRNCOM_SERVER);
+        PRNCOM_LOGF("connect %s", result ? "success" : "failure");
+        PRNCOM_ASSERT(result, "Connect to WebSocket server");
+    }
+
+    __always_inline void closeAndScheduleReconnect() {
+        client.close();
+        needReconnect = true;
+    }
 
     void onWsMessage(websockets::WebsocketsMessage message) {
         //Serial.write(message.c_str(), message.length());
@@ -26,15 +39,8 @@ namespace WS_COM {
             pdMS_TO_TICKS(WS_MESSAGE_RECEIVE_TIMEOUT_MS)
         ) != pdTRUE) {
             PRNCOM_LOG("toUSB buffer full...");
-            client.close();
+            closeAndScheduleReconnect();
         }
-    }
-
-    void reconnect() {
-        PRNCOM_LOG("connecting to " PRNCOM_SERVER);
-        bool result = client.connect(PRNCOM_SERVER);
-        PRNCOM_LOGF("connect %s", result ? "success" : "failure");
-        PRNCOM_ASSERT(result, "Connect to WebSocket server");
     }
 
     void onWsEvent(websockets::WebsocketsEvent event, String data) {
@@ -42,14 +48,14 @@ namespace WS_COM {
             case websockets::WebsocketsEvent::ConnectionClosed:
                 PRNCOM_LOGF("connection lost (%s); reconnecting in %ds", data.c_str(), RECONNECT_DELAY_MS / 1000);
                 vTaskDelay(RECONNECT_DELAY_MS);
-                //reconnect();
+                needReconnect = true;
                 break;
             case websockets::WebsocketsEvent::ConnectionOpened:
                 PRNCOM_LOGF("connection established (%s)", data.c_str());
                 break;
             case websockets::WebsocketsEvent::GotPing:
-                PRNCOM_LOG("got ping; replying with pong");
-                client.pong();
+                PRNCOM_LOG("got ping");
+                //client.pong();
                 break;
             case websockets::WebsocketsEvent::GotPong:
                 PRNCOM_LOG("got pong");
@@ -58,7 +64,22 @@ namespace WS_COM {
     }
 
     __always_inline void sendStep(const char* message, size_t length) {
-        client.sendBinary(message, length);
+        //client.sendBinary(message, length);
+        // WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES
+        size_t position = 0;
+        while (position < length) {
+            size_t remaining = length - position;
+            size_t toSend = min(remaining, (size_t)WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES);
+
+            if (!client.sendBinary(message + position, toSend)) {
+                PRNCOM_LOG("chunk send failed, closing connection");
+                closeAndScheduleReconnect();
+                return;
+            }
+
+            position += toSend;
+            //vTaskDelay(10);
+        }
     }
 
     __always_inline void begin() {
@@ -71,12 +92,29 @@ namespace WS_COM {
 
         client.onMessage(onWsMessage);
         client.onEvent(onWsEvent);
+        
 
         reconnect();
     }
 
     __always_inline void loop() {
         client.poll();
+    }
+
+    /// @brief Check if a reconnect has been scheduled and perform it if so.
+    /// @return Whether a reconnect actually happened.
+    __always_inline bool reconnectIfNecessary() {
+        if (needReconnect && !client.available()) {
+            needReconnect = false;
+            vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS));
+            reconnect();
+            return true;
+        }
+        return false;
+    }
+
+    __always_inline bool loop2() {
+        return reconnectIfNecessary();
     }
 }
 #endif

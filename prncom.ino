@@ -64,6 +64,7 @@ EspUsbHostCdcSerial CdcSerial(usb);
     #define PRNCOM_PASSWORD "discord.com"
     #define PRNCOM_SERVER "ws://172.24.1.1:7080"
     #define WS_MESSAGE_RECEIVE_TIMEOUT_MS 100
+    #define WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES 2048
 
     #include "ws_com.hpp"
 
@@ -143,13 +144,18 @@ void setup() {
 
     xTaskCreatePinnedToCore([](void* arg){
         while (true) {
+            COM2::loop();
+
             size_t receivedItemSize;
-            auto item = xRingbufferReceive(fromUSB, &receivedItemSize, portMAX_DELAY);
+            auto item = xRingbufferReceive(fromUSB, &receivedItemSize, 0);
 
-            //Serial.write((const char*)item, receivedItemSize);
+            if (item != NULL) {
+                COM2::sendStep((char*)item, receivedItemSize);
+                vRingbufferReturnItem(fromUSB, item);
+            }
 
-            COM2::sendStep((char*)item, receivedItemSize);
-            vRingbufferReturnItem(fromUSB, item);
+            COM2::loop2();
+
             vTaskDelay(1);
         }
     }, "to" TOSTRING(COM2), 10240, NULL, configMAX_PRIORITIES - 3, NULL, 0);
@@ -179,13 +185,6 @@ void setup() {
     PRNCOM_LOG("all done");
 }
 
-void loop()
-{
-    //vTaskDelete(NULL);
+void loop() {
     //vTaskDelay(portMAX_DELAY);
-    COM2::loop();
-    /*if (!CdcSerial.connected()) vTaskDelay(1000);
-
-    auto amount = CdcSerial.available();
-    if (amount == 0) */
 }
