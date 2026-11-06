@@ -1,15 +1,23 @@
 #define PRNCOM_MAIN_INO
 
-#include "EspUsbHost.h"
 
-// This is necessary for VS Code to detect xTaskCreatePinnedToCore.
-// The real compile can't find this file, though.
+// This is necessary for VS Code to detect xTaskCreatePinnedToCore,
+// as well as stop complaining about not having a Linux header file
+// in FS.h.
+// The real compiler can't find idf_additions, though.
 #if __has_include(<idf_additions.h>)
     #include <idf_additions.h>
+
+    #define MG_ARCH MG_ARCH_ESP32
+    #define MG_ENABLE_FREERTOS 1
 #endif
 
-#define BUFFER_SIZE 10240
-#define SEND_THRESHOLD BUFFER_SIZE / 2
+#include "EspUsbHost.h"
+
+#define KBYTES * 1024
+#define BYTES * 1
+
+#define BUFFER_SIZE 10 KBYTES
 
 #define PRNCOM_LOGF_NOLN(FORMAT, ...) Serial.printf("[%s : %s:%d @ %lums] " FORMAT, __FUNCTION__, __FILE__, __LINE__, millis(), __VA_ARGS__)
 #define PRNCOM_LOGF(FORMAT, ...) PRNCOM_LOGF_NOLN(FORMAT "\n", __VA_ARGS__)
@@ -60,29 +68,43 @@ EspUsbHostCdcSerial CdcSerial(usb);
 #elifdef IFACE_WEBSOCKET
     #define COM2 WS_COM
 
-    #define PRNCOM_SSID "purplechatapp"
-    #define PRNCOM_PASSWORD "discord.com"
-    #define PRNCOM_SERVER "ws://172.24.1.1:7080"
-    #define WS_MESSAGE_RECEIVE_TIMEOUT_MS 100
-    #define WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES 2048
+    #define PRNCOM_WS_SSID "purplechatapp"
+    #define PRNCOM_WS_PASSWORD "discord.com"
+    #define PRNCOM_WS_SERVER "ws://172.24.1.1:7080"
+    #define PRNCOM_WS_MESSAGE_RECEIVE_TIMEOUT_MS 100
+
+    #define PRNCOM_WS_CHUNKING_ENABLED 0
+    #define PRNCOM_WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES 2048
+    
+    #if PRNCOM_WS_CHUNKING_ENABLED
+        #define PRNCOM_WS_CHUNKING_ENABLE
+    #endif
 
     #include "ws_com.hpp"
 
-    #define IMPL_SPECIFIC_CONFIG_OPT PRINT_CONFIG(PRNCOM_SSID) PRINT_CONFIG(PRNCOM_PASSWORD) PRINT_CONFIG(PRNCOM_SERVER)
+    #define IMPL_SPECIFIC_CONFIG_OPT \
+        PRINT_CONFIG(PRNCOM_SSID) PRINT_CONFIG(PRNCOM_PASSWORD) \
+        PRINT_CONFIG(PRNCOM_SERVER) PRINT_CONFIG(PRNCOM_WS_CHUNKING_ENABLE)
 #endif
 
-#define PRNCOM_CONFIGURATION "USB <-> " TOSTRING(COM2) "\n" \
-    PRINT_CONFIG(BUFFER_SIZE) PRINT_CONFIG(SEND_THRESHOLD) "\n" \
+#define PRNCOM_CONFIGURATION "USB <-> " TOSTRING(COM2) \
+    PRINT_CONFIG(BUFFER_SIZE) "\n" \
     IMPL_SPECIFIC_CONFIG_OPT
 
 #define DIVIDER "\n----------------------\n"
 
 void setup() {
-    rgbLedWrite(RGB_BUILTIN, 255, 0, 0);
+    rgbLedWrite(RGB_BUILTIN, 0, 0, 0);
     Serial.begin(115200);
     //delay(5000);
 
     PRNCOM_LOG("PRNCOM starting. Config:" DIVIDER PRNCOM_CONFIGURATION DIVIDER);
+
+    toUSB = xRingbufferCreate(BUFFER_SIZE, RINGBUF_TYPE_BYTEBUF);
+    fromUSB = xRingbufferCreate(BUFFER_SIZE, RINGBUF_TYPE_BYTEBUF);
+
+    PRNCOM_LOG("init " TOSTRING(COM2));
+    COM2::begin();
 
     usb.onDeviceConnected([](const EspUsbHostDeviceInfo &device) {
             PRNCOM_LOG_NOLN("connected: ");
@@ -97,6 +119,7 @@ void setup() {
             rgbLedWrite(RGB_BUILTIN, 255, 0, 0);
         }
     );
+    rgbLedWrite(RGB_BUILTIN, 255, 0, 0);
 
     if (!CdcSerial.setRxBufferSize(8192)) {
         PRNCOM_LOGF("Set Rx buffer size failed: %s", usb.lastErrorName());
@@ -116,12 +139,6 @@ void setup() {
         ESP.restart();
     }
     PRNCOM_LOG("USB OK");
-
-    toUSB = xRingbufferCreate(BUFFER_SIZE, RINGBUF_TYPE_BYTEBUF);
-    fromUSB = xRingbufferCreate(BUFFER_SIZE, RINGBUF_TYPE_BYTEBUF);
-
-    PRNCOM_LOG("init " TOSTRING(COM2));
-    COM2::begin();
 
     PRNCOM_LOG("create communication tasks");
 

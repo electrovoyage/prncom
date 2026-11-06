@@ -2,7 +2,7 @@
 #define PRNCOM_WSCOM_HPP
 
 #include <WiFi.h>
-#include <ArduinoWebsockets.h>
+#include <mongoose.h>
 
 // This is only needed for VS Code to see the macros
 // defined in prncom.ino.
@@ -15,22 +15,83 @@ extern RingbufHandle_t toUSB;
 #define RECONNECT_DELAY_MS 10000
 
 namespace WS_COM {
-    websockets::WebsocketsClient client;
+    struct mg_mgr mgr;
     volatile bool needReconnect = false;
+    volatile bool connected = false;
+    struct mg_connection* client;
 
-    void reconnect() {
-        PRNCOM_LOG("connecting to " PRNCOM_SERVER);
-        bool result = client.connect(PRNCOM_SERVER);
-        PRNCOM_LOGF("connect %s", result ? "success" : "failure");
-        PRNCOM_ASSERT(result, "Connect to WebSocket server");
-    }
-
-    __always_inline void closeAndScheduleReconnect() {
-        client.close();
+    __always_inline void scheduleReconnect() {
         needReconnect = true;
     }
 
-    void onWsMessage(websockets::WebsocketsMessage message) {
+    __always_inline void close() {
+        // The docs recommend is_draining for closing a connection,
+        // though that's for a graceful disconnect. It may be
+        // better to return to WEBSOCKET_OP_CLOSE.
+        
+        // mg_ws_send(client, nullptr, 0, WEBSOCKET_OP_CLOSE);
+        client->is_draining = true;
+        connected = false;
+    }
+
+    __always_inline void closeAndScheduleReconnect() {
+        close();
+        scheduleReconnect();
+    }
+
+    void eventCallback(struct mg_connection* connection, int eventType, void* eventData) {
+        switch (eventType) {
+            case MG_EV_CONNECT:
+                //connection->is_hexdumping = 1;
+                PRNCOM_LOG("Connection established");
+                break;
+            case MG_EV_ACCEPT:
+                // TODO: this never seems to run. Is it for a different
+                // type of connection?
+                PRNCOM_LOG("Connection accepted");
+                break;
+            case MG_EV_WS_OPEN:
+                PRNCOM_LOG("Websocket connected");
+                connected = true;
+                break;
+            case MG_EV_ERROR:
+                //MG_ERROR(("%p %s", connection->fd, (char *)eventData));
+                PRNCOM_LOGF("\n\n\nERROR: %s (fd %p)\n\n", (char*) eventData, connection->fd);
+                //vTaskDelay(portMAX_DELAY);
+                closeAndScheduleReconnect();
+                break;
+            case MG_EV_WS_MSG:
+                {
+                    auto message = (struct mg_ws_message*) eventData;
+                    //Serial.write(message->data.buf, message->data.len);
+
+                    if (!xRingbufferSend(
+                        toUSB,
+                        message->data.buf,
+                        message->data.len,
+                        PRNCOM_WS_MESSAGE_RECEIVE_TIMEOUT_MS
+                    )) {
+                        PRNCOM_LOG("toUSB buffer full...");
+                        closeAndScheduleReconnect();
+                    }
+                    break;
+                }
+            case MG_EV_CLOSE:
+                PRNCOM_LOG("Websocket closed");
+                connected = false;
+                scheduleReconnect();
+                break;
+        }
+    }
+
+    void reconnect() {
+        PRNCOM_LOG("connecting to " PRNCOM_WS_SERVER);
+        
+        client = mg_ws_connect(&mgr, PRNCOM_WS_SERVER, eventCallback, nullptr, NULL);
+        //while (client && done == false) mg_mgr_poll(&mgr, 1000);
+    }
+
+    /*void onWsMessage(websockets::WebsocketsMessage message) {
         //Serial.write(message.c_str(), message.length());
         if(xRingbufferSend(
             toUSB,
@@ -80,37 +141,74 @@ namespace WS_COM {
             position += toSend;
             //vTaskDelay(10);
         }
-    }
+    }*/
 
-    __always_inline void begin() {
-        PRNCOM_LOG("connecting to WiFi");
-        WiFi.begin(PRNCOM_SSID, PRNCOM_PASSWORD);
-        WiFi.setSleep(WIFI_PS_NONE);
-
-        while (WiFi.status() != WL_CONNECTED);
-        PRNCOM_LOGF("WiFi connected at %s", WiFi.localIP().toString().c_str());
-
-        client.onMessage(onWsMessage);
-        client.onEvent(onWsEvent);
-        
-
-        reconnect();
-    }
-
-    __always_inline void loop() {
-        client.poll();
+    void ledBlinkTask(void* arg) {
+        bool lightState = false;
+        while (true) {
+            lightState = !lightState;
+            rgbLedWrite(RGB_BUILTIN, 0, lightState ? 32 : 0, lightState ? 64 : 0);
+            vTaskDelay(500);
+        }
     }
 
     /// @brief Check if a reconnect has been scheduled and perform it if so.
     /// @return Whether a reconnect actually happened.
     __always_inline bool reconnectIfNecessary() {
-        if (needReconnect && !client.available()) {
+        if (needReconnect) {
+            PRNCOM_LOGF("Will reconnect in %ds", RECONNECT_DELAY_MS / 1000);
             needReconnect = false;
             vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS));
             reconnect();
             return true;
         }
         return false;
+    }
+
+    __always_inline void begin() {
+        PRNCOM_LOG("connecting to WiFi");
+        WiFi.begin(PRNCOM_WS_SSID, PRNCOM_WS_PASSWORD);
+        WiFi.setSleep(WIFI_PS_NONE);
+
+        while (WiFi.status() != WL_CONNECTED);
+        PRNCOM_LOGF("WiFi connected at %s", WiFi.localIP().toString().c_str());
+
+        mg_mgr_init(&mgr);
+        mg_log_set(MG_LL_ERROR);
+        mg_log_set_fn([](char ch, void *) { Serial.print(ch); }, NULL);
+
+        TaskHandle_t blinkTask;
+        xTaskCreate(ledBlinkTask, "wsWaitLED", 4096, NULL, 10, &blinkTask);
+
+        reconnect();
+
+        PRNCOM_LOG("awaiting websocket connection");
+        while (!connected) {
+            mg_mgr_poll(&mgr, 1000);
+            reconnectIfNecessary();
+        };
+        vTaskDelete(blinkTask);
+    }
+
+    __always_inline void loop() {
+        mg_mgr_poll(&mgr, 1000);
+    }
+
+    __always_inline void sendStep(char* item, size_t size) {
+        //mg_ws_send(client, item, size, WEBSOCKET_OP_BINARY);
+        #ifdef PRNCOM_WS_CHUNKING_ENABLE
+            size_t position = 0;
+            while (position < size) {
+                size_t remaining = size - position;
+                size_t toSend = min(remaining, (size_t)PRNCOM_WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES);
+
+                mg_ws_send(client, item + position, toSend, WEBSOCKET_OP_BINARY);
+                position += toSend;
+                vTaskDelay(10);
+            }
+        #else
+            mg_ws_send(client, item, size, WEBSOCKET_OP_BINARY);
+        #endif
     }
 
     __always_inline bool loop2() {

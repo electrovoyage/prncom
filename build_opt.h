@@ -1,1 +1,3 @@
 -fmacro-prefix-map=C:/Users/electrovoyage/Documents/Arduino/prncom=
+-DMG_ARCH=MG_ARCH_ESP32
+-DMG_ENABLE_FREERTOS=1
