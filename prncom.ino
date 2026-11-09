@@ -14,10 +14,11 @@
 
 #include "EspUsbHost.h"
 
-#define KBYTES * 1024
+#define MBYTES * 1024 KBYTES
+#define KBYTES * 1024 BYTES
 #define BYTES * 1
 
-#define BUFFER_SIZE 10 KBYTES
+#define BUFFER_SIZE 64 KBYTES
 
 #define PRNCOM_LOGF_NOLN(FORMAT, ...) Serial.printf("[%s : %s:%d @ %lums] " FORMAT, __FUNCTION__, __FILE__, __LINE__, millis(), __VA_ARGS__)
 #define PRNCOM_LOGF(FORMAT, ...) PRNCOM_LOGF_NOLN(FORMAT "\n", __VA_ARGS__)
@@ -41,10 +42,6 @@ extern "C" {
 RingbufHandle_t toUSB;
 RingbufHandle_t fromUSB;
 
-//#define IFACE_HC06
-#define IFACE_WEBSOCKET
-//#define IFACE_RAW_TCP
-
 EspUsbHost usb;
 EspUsbHostCdcSerial CdcSerial(usb);
 
@@ -52,6 +49,17 @@ EspUsbHostCdcSerial CdcSerial(usb);
 #define TOSTRING(X) _TOSTRING(X)
 #define TOSTRING2(X) TOSTRING(X)
 #define PRINT_CONFIG(VALUE) "\n" #VALUE "=" _TOSTRING(VALUE)
+
+//#define IFACE_HC06
+#define IFACE_WEBSOCKET
+//#define IFACE_RAW_TCP
+
+#define PRNCOM_HTTP_CONFIG
+
+#if defined(PRNCOM_HTTP_CONFIG) | defined(IFACE_WEBSOCKET) | defined(IFACE_RAW_TCP)
+    #define PRNCOM_WIFI_SSID "purplechatapp"
+    #define PRNCOM_WIFI_PASSWORD "discord.com"
+#endif
 
 #ifdef IFACE_HC06
     #define COM2 HC06
@@ -68,13 +76,11 @@ EspUsbHostCdcSerial CdcSerial(usb);
 #elifdef IFACE_WEBSOCKET
     #define COM2 WS_COM
 
-    #define PRNCOM_WS_SSID "purplechatapp"
-    #define PRNCOM_WS_PASSWORD "discord.com"
     #define PRNCOM_WS_SERVER "ws://172.24.1.1:7080"
     #define PRNCOM_WS_MESSAGE_RECEIVE_TIMEOUT_MS 100
 
-    #define PRNCOM_WS_CHUNKING_ENABLED 0
-    #define PRNCOM_WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES 2048
+    #define PRNCOM_WS_CHUNKING_ENABLED 1
+    #define PRNCOM_WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES 2 KBYTES
     
     #if PRNCOM_WS_CHUNKING_ENABLED
         #define PRNCOM_WS_CHUNKING_ENABLE
@@ -85,6 +91,10 @@ EspUsbHostCdcSerial CdcSerial(usb);
     #define IMPL_SPECIFIC_CONFIG_OPT \
         PRINT_CONFIG(PRNCOM_SSID) PRINT_CONFIG(PRNCOM_PASSWORD) \
         PRINT_CONFIG(PRNCOM_SERVER) PRINT_CONFIG(PRNCOM_WS_CHUNKING_ENABLE)
+#endif
+
+#ifdef PRNCOM_HTTP_CONFIG
+    #include "http_config.hpp"
 #endif
 
 #define PRNCOM_CONFIGURATION "USB <-> " TOSTRING(COM2) \
@@ -147,14 +157,16 @@ void setup() {
             if (!CdcSerial.connected()) vTaskDelay(1000);
 
             size_t receivedItemSize;
-            auto item = xRingbufferReceive(toUSB, &receivedItemSize, portMAX_DELAY);
+            auto item = xRingbufferReceive(toUSB, &receivedItemSize, 0);
 
-            //Serial.write((const char*)item, receivedItemSize);
-            size_t size = 0;
-            while (size < receivedItemSize) {
-                size += CdcSerial.write((char *)(item + size), receivedItemSize - size);
+            if (item != NULL) {
+                //Serial.write((const char*)item, receivedItemSize);
+                size_t size = 0;
+                while (size < receivedItemSize) {
+                    size += CdcSerial.write((char *)(item + size), receivedItemSize - size);
+                }
+                vRingbufferReturnItem(toUSB, item);
             }
-            vRingbufferReturnItem(toUSB, item);
             vTaskDelay(1);
         }
     }, "toCDC", 10240, NULL, configMAX_PRIORITIES - 3, NULL, 1);
@@ -199,9 +211,15 @@ void setup() {
         }
     }, "readCDC", 10240, NULL, configMAX_PRIORITIES - 2, NULL, 1);
 
+    #ifdef PRNCOM_HTTP_CONFIG
+        PrnComHttp::begin();
+    #endif
+
     PRNCOM_LOG("all done");
 }
 
 void loop() {
-    //vTaskDelay(portMAX_DELAY);
+    #ifdef PRNCOM_HTTP_CONFIG
+        PrnComHttp::loop();
+    #endif
 }

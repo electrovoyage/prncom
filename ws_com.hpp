@@ -45,11 +45,6 @@ namespace WS_COM {
                 //connection->is_hexdumping = 1;
                 PRNCOM_LOG("Connection established");
                 break;
-            case MG_EV_ACCEPT:
-                // TODO: this never seems to run. Is it for a different
-                // type of connection?
-                PRNCOM_LOG("Connection accepted");
-                break;
             case MG_EV_WS_OPEN:
                 PRNCOM_LOG("Websocket connected");
                 connected = true;
@@ -57,7 +52,6 @@ namespace WS_COM {
             case MG_EV_ERROR:
                 //MG_ERROR(("%p %s", connection->fd, (char *)eventData));
                 PRNCOM_LOGF("\n\n\nERROR: %s (fd %p)\n\n", (char*) eventData, connection->fd);
-                //vTaskDelay(portMAX_DELAY);
                 closeAndScheduleReconnect();
                 break;
             case MG_EV_WS_MSG:
@@ -167,7 +161,7 @@ namespace WS_COM {
 
     __always_inline void begin() {
         PRNCOM_LOG("connecting to WiFi");
-        WiFi.begin(PRNCOM_WS_SSID, PRNCOM_WS_PASSWORD);
+        WiFi.begin(PRNCOM_WIFI_SSID, PRNCOM_WIFI_PASSWORD);
         WiFi.setSleep(WIFI_PS_NONE);
 
         while (WiFi.status() != WL_CONNECTED);
@@ -191,7 +185,7 @@ namespace WS_COM {
     }
 
     __always_inline void loop() {
-        mg_mgr_poll(&mgr, 1000);
+        mg_mgr_poll(&mgr, 0);
     }
 
     __always_inline void sendStep(char* item, size_t size) {
