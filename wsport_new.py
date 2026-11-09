@@ -1,17 +1,22 @@
-import select
+import os
+import errno
+import uringcore
+import socket
 import asyncio
 import pyvirtualserial
-from websockets.asyncio.server import serve, ServerConnection
+from picows.websockets.asyncio.server import serve, ServerConnection
+
+asyncio.set_event_loop_policy(uringcore.EventLoopPolicy())
 
 MAX_READ = 4096
 
 to_websocket = asyncio.Queue(128)
 to_pty = asyncio.Queue(128)
 
-port = pyvirtualserial.VirtualSerial(baudrate=115200, timeout=1)
+port = pyvirtualserial.VirtualSerial(baudrate=115200, timeout=0)
 print(f'pyvirtualserial created pty at {port.get_slave_name()}')
 
-global connection
+global connection, eventLoop
 connection: ServerConnection = None
 
 async def pty_writer():
@@ -33,6 +38,11 @@ async def pty_writer():
                 
 async def wsHandler(websocket: ServerConnection):
     global connection
+    
+    sock = websocket.transport.get_extra_info('socket')
+    if sock is not None:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    
     connection = websocket
     print('handler started')
     
@@ -50,46 +60,68 @@ async def wsHandler(websocket: ServerConnection):
             connection = None
             
 async def main():
-    asyncio.get_event_loop().create_task(pty_writer())
+    global eventLoop
+    eventLoop.create_task(pty_writer())
+    eventLoop.create_task(readPtyLoop())
     server = await serve(wsHandler, '0.0.0.0', 7080)
     print('serving websocket')
     await server.serve_forever()
     
 async def readPtyLoop():
-    global connection
-    print('pty loop read starting')
-    while True:
-        if connection is None:
-            await asyncio.sleep(0.1)
-            continue
+    global connection, eventLoop
+    
+    fd = port._reader.fileno()
+    
+    def on_readable():
+        try:
+            data = os.read(fd, MAX_READ)
+        except BlockingIOError:
+            return
+        except OSError as e:
+            if e.errno in (errno.EIO, errno.EBADF):
+                print('pty closed', flush=True)
+                eventLoop.remove_reader(fd)
+                return
+            
+            raise
         
-        ready, _, _ = await asyncio.to_thread(
-            select.select, [port._reader], [], [], 0.05
-        )
-        if not ready: continue
-        
-        data = await asyncio.to_thread(port.read, MAX_READ)
         if not data:
-            await asyncio.sleep(0.001)
-            continue
+            eventLoop.remove_reader(fd)
+            return
         
         try:
-            await connection.send(data)
-            await asyncio.sleep(0)
-        except Exception:
-            if connection is not None:
-                try:
-                    await connection.close()
-                except Exception:
-                    pass
-                
-                connection = None
-                
-            continue
+            to_websocket.put_nowait(data)
+        except asyncio.QueueFull:
+            eventLoop.remove_reader(fd)
+            
+    eventLoop.add_reader(fd, on_readable)
+    
+    print('pty loop read starting')
+    try:
+        while True:
+            data = await to_websocket.get()
+            
+            eventLoop.add_reader(fd, on_readable)
+            
+            if connection is None:
+                continue
+            
+            try:
+                await connection.send(data)
+            except Exception as e:
+                print(f'ws send failed: {e}', flush=True)
+                if connection is not None:
+                    try:
+                        await connection.close()
+                    except Exception:
+                        pass
+                    connection = None
+    finally:
+        eventLoop.remove_reader(fd)
     
 print('Starting up')
 eventLoop = asyncio.new_event_loop()
 asyncio.set_event_loop(eventLoop)
-eventLoop.create_task(readPtyLoop())
+#eventLoop.create_task(readPtyLoop())
 eventLoop.run_until_complete(main())
 eventLoop.close()

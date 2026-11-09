@@ -3,6 +3,7 @@
 
 #include <WiFi.h>
 #include <mongoose.h>
+#include <lwip/sockets.h>
 
 // This is only needed for VS Code to see the macros
 // defined in prncom.ino.
@@ -48,6 +49,10 @@ namespace WS_COM {
             case MG_EV_WS_OPEN:
                 PRNCOM_LOG("Websocket connected");
                 connected = true;
+
+                const static int one = 1;
+                setsockopt((int)connection->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
                 break;
             case MG_EV_ERROR:
                 //MG_ERROR(("%p %s", connection->fd, (char *)eventData));
@@ -184,8 +189,8 @@ namespace WS_COM {
         vTaskDelete(blinkTask);
     }
 
-    __always_inline void loop() {
-        mg_mgr_poll(&mgr, 0);
+    __always_inline void loop2() {
+        mg_mgr_poll(&mgr, 1);
     }
 
     __always_inline void sendStep(char* item, size_t size) {
@@ -198,14 +203,19 @@ namespace WS_COM {
 
                 mg_ws_send(client, item + position, toSend, WEBSOCKET_OP_BINARY);
                 position += toSend;
-                vTaskDelay(10);
+                
+                // Only wait if it's needed
+                if (position < size && client->send.len > 32768) {
+                    vTaskDelay(1);
+                }
             }
         #else
             mg_ws_send(client, item, size, WEBSOCKET_OP_BINARY);
         #endif
+        mg_mgr_poll(&mgr, 0);
     }
 
-    __always_inline bool loop2() {
+    __always_inline bool loop() {
         return reconnectIfNecessary();
     }
 }

@@ -77,7 +77,7 @@ EspUsbHostCdcSerial CdcSerial(usb);
     #define COM2 WS_COM
 
     #define PRNCOM_WS_SERVER "ws://172.24.1.1:7080"
-    #define PRNCOM_WS_MESSAGE_RECEIVE_TIMEOUT_MS 100
+    #define PRNCOM_WS_MESSAGE_RECEIVE_TIMEOUT_MS 5
 
     #define PRNCOM_WS_CHUNKING_ENABLED 1
     #define PRNCOM_WS_MESSAGE_OUTGOING_MAX_CHUNK_SIZE_BYTES 2 KBYTES
@@ -95,10 +95,13 @@ EspUsbHostCdcSerial CdcSerial(usb);
 
 #ifdef PRNCOM_HTTP_CONFIG
     #include "http_config.hpp"
+    #define PRNCOM_HTTP_CONFIG_ENABLED 1
+#else
+    #define PRNCOM_HTTP_CONFIG_ENABLED 0
 #endif
 
 #define PRNCOM_CONFIGURATION "USB <-> " TOSTRING(COM2) \
-    PRINT_CONFIG(BUFFER_SIZE) "\n" \
+    PRINT_CONFIG(BUFFER_SIZE) PRINT_CONFIG(PRNCOM_HTTP_CONFIG_ENABLED) "\n" \
     IMPL_SPECIFIC_CONFIG_OPT
 
 #define DIVIDER "\n----------------------\n"
@@ -207,6 +210,7 @@ void setup() {
             // it's a good idea to use that anyway.
 
             xRingbufferSend(fromUSB, buf, actual_amount, portMAX_DELAY);
+            free(buf);
             vTaskDelay(1);
         }
     }, "readCDC", 10240, NULL, configMAX_PRIORITIES - 2, NULL, 1);
